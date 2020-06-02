@@ -10,80 +10,108 @@ class Poll
 	
 	public function create($question, $answers)
 	{
-		$conn = new mysqli(DB_SERVER, DB_USERNAME, DB_PASSWORD, DB_NAME);
-		$sql = "INSERT INTO polls (id, question)
-				VALUES (NULL, '{$question}');";
-
-		if ($conn->query($sql) === TRUE) {
-			$poll_id = $conn->insert_id;
-			echo "New record created successfully";
-		} else {
-			echo "Error: " . $sql . "<br>" . $conn->error;
+		$db = new Db();
+		
+		$question_arr = array(
+			"question" => $question
+		);
+		
+		try
+		{
+			$poll_id = $db->create('polls', $question_arr);
+		}
+		catch (Exception $e)
+		{
+			echo 'Caught exception: ',  $e->getMessage(), "\n";
 		}
 		
 		foreach($answers as $answer)
 		{
 			$answer_alias = self::slugify(trim($answer));
-			$sql = "INSERT INTO poll_options (id, poll_id, answer_text, answer_alias)
-					VALUES (NULL, {$poll_id}, '{$answer}', '{$answer_alias}');";
-			
-			if ($conn->query($sql) === TRUE) {
-				echo "New record created successfully";
-			} else {
-				echo "Error: " . $sql . "<br>" . $conn->error;
+			$answer_arr = array(
+				"poll_id" => $poll_id,
+				"answer_text" => $answer,
+				"answer_alias" => $answer_alias,
+			);
+			try
+			{
+				$db->create('poll_options', $answer_arr);
+			}
+			catch (Exception $e)
+			{
+				echo 'Caught exception: ',  $e->getMessage(), "\n";
 			}
 		}
-		$conn->close();
-		
-		
 	}
 	
 	public function list_all()
 	{
-		$conn = new mysqli(DB_SERVER, DB_USERNAME, DB_PASSWORD, DB_NAME);
-		
-		$sql = "SELECT id, question
-				FROM polls;";
-				
-		$result = $conn->query($sql);
-		$data = $result->fetch_all(MYSQLI_ASSOC);
+		$db = new Db();
+		$column_arr = array(
+			'id',
+			'question'
+		);
+		$data = $db->read('polls', $column_arr);
 		return $data;
 	}
 	
 	public function read($poll_id)
 	{
-		$conn = new mysqli(DB_SERVER, DB_USERNAME, DB_PASSWORD, DB_NAME);
+		$db = new Db();
+		$column_arr = array(
+			'poll_options.poll_id',
+			'polls.question',
+			'GROUP_CONCAT(poll_options.answer_text SEPARATOR \'----\') AS answers'
+		);
 		
-		$sql = "SELECT a.id as poll_id, a.question, GROUP_CONCAT(b.answer_text SEPARATOR '----') as answers
-				FROM polls a 
-				INNER JOIN poll_options b ON a.id = b.poll_id
-				WHERE a.id = {$poll_id}
-				GROUP BY b.poll_id;";
-				
-		$result = $conn->query($sql);
-		$data = $result->fetch_array(MYSQLI_ASSOC);
+		$conditions = array(
+			array(
+				'column' => 'polls.id',
+				'value' => $poll_id
+			)
+		);
+		
+		$join_tables = array(
+			array(
+				'type' => 'INNER JOIN',
+				'name' => 'poll_options',
+				'condition' => ' polls.id = poll_options.poll_id',
+			)
+		);
+		
+		$group_by = 'poll_options.poll_id';
+		
+		$data = $db->read('polls', $column_arr, $conditions, $join_tables, $group_by);
+		$data = array_shift($data);
+		
 		$data['answer_output'] = str_replace('----', "\n", $data['answers']);
 		return $data;
 	}
 	
 	public function update($poll_id, $question, $answers)
 	{
-		$conn = new mysqli(DB_SERVER, DB_USERNAME, DB_PASSWORD, DB_NAME);
-		$sql = "UPDATE polls SET question = '{$question}';";
-					
-		if ($conn->query($sql) === TRUE) {
-			echo "New record created successfully";
-		} else {
-			echo "Error: " . $sql . "<br>" . $conn->error;
-			exit;
-		}
+		$db = new Db();
 		
-		$sql = "SELECT answer_alias FROM poll_options WHERE poll_id = {$poll_id};";
-		$result = $conn->query($sql)->fetch_all(MYSQLI_ASSOC);
+		// update question
+		$column_arr = array(
+			'question' => $question
+		);
+		$conditions_arr = array(
+			'id' => $poll_id
+		);
+		$db->update('polls', $column_arr, $conditions_arr);
+		
+		$options_conditions_arr = array(
+			'poll_id' => $poll_id
+		);
+		
+		
+		//add new response values
+		$result = $db->read('poll_options', 'answer_alias', $options_conditions_arr);
 		$answer_aliases = array_map(function($e){
 			return $e['answer_alias'];
-		}, $result);
-
+		}, $result);	
+		
 		$new_aliases = [];
 		foreach($answers as $answer)
 		{
@@ -91,96 +119,105 @@ class Poll
 			$new_aliases[] = $answer_alias;
 			if(!in_array($answer_alias, $answer_aliases))
 			{
-				$sql = "INSERT INTO poll_options (id, poll_id, answer_text)
-						VALUES (NULL, {$poll_id}, '{$answer}');";
-				
-				if ($conn->query($sql) === TRUE) {
-					echo "New record created successfully";
-				} else {
-					echo "Error: " . $sql . "<br>" . $conn->error;
-					exit;
-				}
+				$columns_arr = array(
+					'poll_id' => $poll_id,
+					'answer_text' => $answer
+				);
+				$db->create('poll_options', $columns_arr);
 			}
 		}
 		
+		// DELETE response values that were removed
 		foreach($answer_aliases as $alias)
 		{
 			if(!in_array($alias, $new_aliases))
 			{
-				$sql = "DELETE FROM poll_options WHERE answer_alias = '{$alias}';";
-				if ($conn->query($sql) === TRUE) {
-					echo "Alias deleted successfully";
-				} else {
-					echo "Error: " . $sql . "<br>" . $conn->error;
-					exit;
-				}
+				$delete_conditions = array(
+					'answer_alias' => $alias
+				);
+				$db->delete('poll_options', $delete_conditions);
 			}
 		}
-		$conn->close();		
 	}
 	
 	public function delete($poll_id)
 	{
-		$conn = new mysqli(DB_SERVER, DB_USERNAME, DB_PASSWORD, DB_NAME);
-		$sql = "DELETE FROM polls WHERE id = {$poll_id};";
+		$db = new Db();
+		$delete_conditions = array(
+			'poll_id' => $poll_id
+		);
+		$db->delete('poll_options', $delete_conditions);
 
-		if ($conn->query($sql) === TRUE) {
-			echo "Poll Deleted successfully";
-		} else {
-			echo "Error: " . $sql . "<br>" . $conn->error;
-			exit;
-		}
+		$delete_conditions = array(
+			'id' => $poll_id
+		);
+		$db->delete('polls', $delete_conditions);
 	}
 	
 	public function vote($poll_id)
 	{
-		$conn = new mysqli(DB_SERVER, DB_USERNAME, DB_PASSWORD, DB_NAME);
+		$db = new Db();
 		
-		$sql = "SELECT id as poll_id, question
-				FROM polls 
-				WHERE id = {$poll_id};";
-				
-		$result = $conn->query($sql);
-		$data = $result->fetch_array(MYSQLI_ASSOC);
+		//get question data
+		$columns_arr = array('id', 'question');
+		$conditions_arr = array(
+			array(
+				'column' => 'id',
+				'value' => $poll_id
+			)
+		);
+		$data = $db->read('polls', $columns_arr, $conditions_arr);
+		$data = array_shift($data);
 		
-		$sql = "SELECT answer_text, answer_alias
-				FROM poll_options 
-				WHERE poll_id = {$poll_id};";
-		$result = $conn->query($sql);
-		$answer_data = $result->fetch_all(MYSQLI_ASSOC);
-		
+		// get answer data
+		$columns_arr = array('answer_text, answer_alias');
+		$conditions_arr = array(
+			array(
+				'column' => 'poll_id',
+				'value' => $poll_id
+			)
+		);
+		$answer_data = $db->read('poll_options', $columns_arr, $conditions_arr);
 		$data['answers'] = $answer_data;
-		
-		$conn->close();
-		
+
 		return $data;
 	}
 	
 	public function display_results($poll_id)
 	{
-		$conn = new mysqli(DB_SERVER, DB_USERNAME, DB_PASSWORD, DB_NAME);
+		$db = new Db();
 		
-		$sql = "SELECT id as poll_id, question
-				FROM polls 
-				WHERE id = {$poll_id};";
-				
-		$result = $conn->query($sql);
-		$data = $result->fetch_array(MYSQLI_ASSOC);
+		// get question data
+		$columns = array('id', 'question');
+		$condition = array(
+			array(
+				'column' => 'id',
+				'value' => $poll_id,
+			)
+		);
+		$data = $db->read('polls', $columns, $condition);
+		$data = array_shift($data);
 		
-		$sql = "SELECT answer_text, answer_alias
-				FROM poll_options 
-				WHERE poll_id = {$poll_id};";
-		$result = $conn->query($sql);
-		$answer_data = $result->fetch_all(MYSQLI_ASSOC);
+		// get answer data
+		$columns_arr = array('answer_text, answer_alias');
+		$conditions_arr = array(
+			array(
+				'column' => 'poll_id',
+				'value' => $poll_id
+			)
+		);
+		$answer_data = $db->read('poll_options', $columns_arr, $conditions_arr);
 		
-		$sql = "SELECT response_id, COUNT(id) as total
-				FROM poll_responses
-				WHERE poll_id = {$poll_id}
-				GROUP BY response_id;";
-				
-
-		$result = $conn->query($sql);
-		$response_data = $result->fetch_all(MYSQLI_ASSOC);
+		
+		// get response data
+		$columns_arr = array('response_id, COUNT(id) as total');
+		$conditions_arr = array(
+			array(
+				'column' => 'poll_id',
+				'value' => $poll_id
+			)
+		);
+		$response_data = $db->read('poll_responses', $columns_arr, $conditions_arr, NULL, NULL, 'response_id');
 
 		$total_votes = 0;
 		foreach($response_data as $response)
@@ -199,32 +236,44 @@ class Poll
 		}
 		$data['answers'] = $answer_data;
 		
-		$conn->close();
-		
 		return $data;
 	}
 	
 	public function answer($poll_id, $answer_alias)
 	{
-		$conn = new mysqli(DB_SERVER, DB_USERNAME, DB_PASSWORD, DB_NAME);
-		
+		$db = new Db();
 		$user = $_SERVER['REMOTE_ADDR'];
+		$check_conditions = array(
+			array(
+				'column' => 'poll_id',
+				'value' => $poll_id,
+			),
+			array(
+				'column' => 'user_ip',
+				'value' => $user,
+			),
+		);
+		$check = $db->read('poll_responses', 'poll_id', $check_conditions);
 		
-		$sql_check = "SELECT id FROM poll_responses WHERE poll_id = {$poll_id} AND user_ip = '{$user}';";
-		$check_result = $conn->query($sql_check);
-		if(mysqli_num_rows($check_result) > 0){
-			$sql = "UPDATE poll_responses SET response_id = '{$answer_alias}' WHERE user_ip = '{$user}';";
-		}
+		if(count($check) > 0)
+		{
+			$columns = array(
+				'response_id' => $answer_alias
+			);
+			$conditions = array(
+				'user_ip' => $user
+			);
+			$db->update('poll_responses', $columns, $conditions);
+		} 
 		else
 		{
-			$sql = "INSERT INTO poll_responses (id, poll_id, response_id, user_ip)
-					VALUES (NULL, {$poll_id}, '{$answer_alias}', '{$user}');";
-		}	
-		if ($conn->query($sql) === TRUE) {
-			echo "Vote cast successfully";
-		} else {
-			echo "Error: " . $sql . "<br>" . $conn->error;
-			exit;
+			$columns = array(
+				'poll_id' => $poll_id,
+				'response_id' => $answer_alias,
+				'user_ip' => $user
+			);
+			$db->create('poll_responses', $columns);
 		}
+		
 	}
 }
